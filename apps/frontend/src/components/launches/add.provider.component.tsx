@@ -21,6 +21,44 @@ import copy from 'copy-to-clipboard';
 import { capitalize } from 'lodash';
 const resolver = classValidatorResolver(ApiKeyDto);
 
+function canOpenProviderAuthorizeUrl(url: unknown): url is string {
+  if (typeof url !== 'string' || !/^https?:\/\//i.test(url)) {
+    return false;
+  }
+
+  try {
+    const parsed = new URL(url);
+    const credentialMissing = (key: string) => {
+      if (!parsed.searchParams.has(key)) {
+        return false;
+      }
+      const value = parsed.searchParams.get(key);
+      return !value || value === 'undefined' || value === 'null';
+    };
+
+    if (credentialMissing('client_id') || credentialMissing('client_key')) {
+      return false;
+    }
+
+    if (
+      parsed.hostname === 'accounts.google.com' &&
+      !parsed.searchParams.get('client_id')
+    ) {
+      return false;
+    }
+
+    for (const value of parsed.searchParams.values()) {
+      if (value === 'undefined' || value.startsWith('undefined/')) {
+        return false;
+      }
+    }
+
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export const useAddProvider = (update?: () => void, invite?: boolean) => {
   const modal = useModals();
   const fetch = useFetch();
@@ -473,8 +511,12 @@ export const AddProviderComponent: FC<{
           // carry the `postiz://` deep link so the backend redirects
           // back to the iOS/Android app after OAuth completes, instead
           // of the default web redirect.
+          const instanceUrl =
+            externalUrl && externalUrl !== 'undefined' ? externalUrl : '';
           const params = [
-            `externalUrl=${encodeURIComponent(externalUrl)}`,
+            instanceUrl
+              ? `externalUrl=${encodeURIComponent(instanceUrl)}`
+              : '',
             onboardingParam,
             isMobile
               ? `redirectUrl=${encodeURIComponent('postiz://integrations')}`
@@ -482,52 +524,59 @@ export const AddProviderComponent: FC<{
           ]
             .filter(Boolean)
             .join('&');
-          const response = await fetch(
-            `/integrations/social/${identifier}${params ? `?${params}` : ''}`
-          );
-          if (response.status === 402) {
-            return;
-          }
-          const { url, err } = await response.json();
-          if (err) {
+          const connectFailed = () => {
             toaster.show(
               t(
                 'could_not_connect_to_platform',
-                'Could not connect to the platform'
+                'Could not connect to the platform. Set its OAuth client id and secret in the server environment, then restart the backend.'
               ),
               'warning'
             );
-            return;
-          }
-
-          if (invite) {
-            toaster.show(
-              'Invite link copied to clipboard, link will be available for 1 hour',
-              'success'
+          };
+          try {
+            const response = await fetch(
+              `/integrations/social/${identifier}${params ? `?${params}` : ''}`
             );
-            modal.closeAll();
-            copy(url);
-            return;
-          }
-
-          if (isMobile) {
-            // In the mobile WebView the OAuth provider (Google, Facebook,
-            // etc.) typically refuses in-WebView sign-in. Post the URL
-            // out to React Native so it can open the system browser;
-            // `window.open`/`location.href` aren't reliable here because
-            // RN WebView doesn't always route them through the native
-            // navigation intercept. The backend redirects back to the
-            // app via `postiz://` once OAuth completes.
-            const rn = (window as any).ReactNativeWebView;
-            if (rn && typeof rn.postMessage === 'function') {
-              rn.postMessage(JSON.stringify({ type: 'open-external', url }));
+            if (response.status === 402) {
               return;
             }
-            window.open(url, '_blank');
-            return;
-          }
+            const { url, err } = await response.json();
+            if (err || !canOpenProviderAuthorizeUrl(url)) {
+              connectFailed();
+              return;
+            }
 
-          window.location.href = url;
+            if (invite) {
+              toaster.show(
+                'Invite link copied to clipboard, link will be available for 1 hour',
+                'success'
+              );
+              modal.closeAll();
+              copy(url);
+              return;
+            }
+
+            if (isMobile) {
+              // In the mobile WebView the OAuth provider (Google, Facebook,
+              // etc.) typically refuses in-WebView sign-in. Post the URL
+              // out to React Native so it can open the system browser;
+              // `window.open`/`location.href` aren't reliable here because
+              // RN WebView doesn't always route them through the native
+              // navigation intercept. The backend redirects back to the
+              // app via `postiz://` once OAuth completes.
+              const rn = (window as any).ReactNativeWebView;
+              if (rn && typeof rn.postMessage === 'function') {
+                rn.postMessage(JSON.stringify({ type: 'open-external', url }));
+                return;
+              }
+              window.open(url, '_blank');
+              return;
+            }
+
+            window.location.href = url;
+          } catch {
+            connectFailed();
+          }
         };
         if (isWeb3) {
           openWeb3();

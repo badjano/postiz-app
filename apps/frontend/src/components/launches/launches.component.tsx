@@ -576,7 +576,7 @@ export const LaunchesComponent = () => {
           return;
         }
 
-        const { url } = await (
+        const { url, err } = await (
           await fetch(
             `/integrations/social/${integration.identifier}?refresh=${integration.internalId}`,
             {
@@ -584,9 +584,19 @@ export const LaunchesComponent = () => {
             }
           )
         ).json();
+        if (err || typeof url !== 'string' || !/^https?:\/\//i.test(url)) {
+          toast.show(
+            t(
+              'could_not_connect_to_platform',
+              'Could not connect to the platform. Set its OAuth client id and secret in the server environment, then restart the backend.'
+            ),
+            'warning'
+          );
+          return;
+        }
         window.location.href = url;
       },
-    []
+    [fetch, toast, t, modal, router]
   );
   useEffect(() => {
     if (typeof window === 'undefined') {

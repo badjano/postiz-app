@@ -3,6 +3,7 @@ import {
   Controller,
   Delete,
   Get,
+  Logger,
   Param,
   Post,
   Put,
@@ -37,6 +38,49 @@ import {
 } from '@gitroom/backend/services/auth/permissions/permission.exception.class';
 import { uniqBy } from 'lodash';
 import { RefreshIntegrationService } from '@gitroom/nestjs-libraries/integrations/refresh.integration.service';
+
+// Providers interpolate missing env vars into the authorize URL
+// (`client_id=undefined`). google-auth-library omits an undefined client id,
+// so a Google URL with no client_id is the same failure.
+function oauthAuthorizeUrlIsUnconfigured(url: string) {
+  if (!/^https?:\/\//i.test(url)) {
+    return false;
+  }
+
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return true;
+  }
+
+  const credentialMissing = (key: string) => {
+    if (!parsed.searchParams.has(key)) {
+      return false;
+    }
+    const value = parsed.searchParams.get(key);
+    return !value || value === 'undefined' || value === 'null';
+  };
+
+  if (credentialMissing('client_id') || credentialMissing('client_key')) {
+    return true;
+  }
+
+  if (
+    parsed.hostname === 'accounts.google.com' &&
+    !parsed.searchParams.get('client_id')
+  ) {
+    return true;
+  }
+
+  for (const value of parsed.searchParams.values()) {
+    if (value === 'undefined' || value.startsWith('undefined/')) {
+      return true;
+    }
+  }
+
+  return false;
+}
 
 @ApiTags('Integrations')
 @Controller('/integrations')
@@ -243,20 +287,33 @@ export class IntegrationsController {
       migrateTo || integration
     );
 
-    if (integrationProvider.externalUrl && !externalUrl) {
+    // The launches UI used to always send externalUrl=undefined. That string
+    // is truthy, so providers that require a real instance URL would call
+    // their API with the host "undefined".
+    const instanceUrl =
+      !externalUrl || externalUrl === 'undefined' ? undefined : externalUrl;
+
+    if (integrationProvider.externalUrl && !instanceUrl) {
       throw new Error('Missing external url');
     }
 
     try {
       const getExternalUrl = integrationProvider.externalUrl
         ? {
-            ...(await integrationProvider.externalUrl(externalUrl)),
-            instanceUrl: externalUrl,
+            ...(await integrationProvider.externalUrl(instanceUrl!)),
+            instanceUrl: instanceUrl!,
           }
         : undefined;
 
       const { codeVerifier, state, url } =
         await integrationProvider.generateAuthUrl(getExternalUrl);
+
+      if (oauthAuthorizeUrlIsUnconfigured(url)) {
+        Logger.warn(
+          `Connect URL for ${integration} is missing OAuth client credentials`
+        );
+        return { err: true };
+      }
 
       if (refresh) {
         await ioRedis.set(`refresh:${state}`, refresh, 'EX', 3600);
@@ -281,6 +338,11 @@ export class IntegrationsController {
 
       return { url };
     } catch (err) {
+      Logger.warn(
+        `Connect URL failed for ${integration}: ${
+          err instanceof Error ? err.message : String(err)
+        }`
+      );
       return { err: true };
     }
   }

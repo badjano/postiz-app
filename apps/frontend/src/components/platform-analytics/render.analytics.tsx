@@ -5,6 +5,7 @@ import { useFetch } from '@gitroom/helpers/utils/custom.fetch';
 import { ChartSocial } from '@gitroom/frontend/components/analytics/chart-social';
 import { LoadingComponent } from '@gitroom/frontend/components/layout/loading';
 import { useT } from '@gitroom/react/translation/get.transation.service.client';
+import { useToaster } from '@gitroom/react/toaster/toaster';
 
 interface AnalyticsDataItem {
   label: string;
@@ -174,6 +175,8 @@ export const RenderAnalytics: FC<{
   const { integration, date } = props;
   const [loading, setLoading] = useState(true);
   const fetch = useFetch();
+  const toaster = useToaster();
+  const t = useT();
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -201,7 +204,7 @@ export const RenderAnalytics: FC<{
         }
       ) =>
       async () => {
-        const { url } = await (
+        const { url, err } = await (
           await fetch(
             `/integrations/social/${integrationData.identifier}?refresh=${integrationData.internalId}`,
             {
@@ -209,12 +212,20 @@ export const RenderAnalytics: FC<{
             }
           )
         ).json();
+        if (err || typeof url !== 'string' || !/^https?:\/\//i.test(url)) {
+          toaster.show(
+            t(
+              'could_not_connect_to_platform',
+              'Could not connect to the platform. Set its OAuth client id and secret in the server environment, then restart the backend.'
+            ),
+            'warning'
+          );
+          return;
+        }
         window.location.href = url;
       },
-    []
+    [fetch, toaster, t]
   );
-
-  const t = useT();
 
   const totals = useMemo(() => {
     return data?.map((p: AnalyticsDataItem) => {
